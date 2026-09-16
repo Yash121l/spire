@@ -2,41 +2,50 @@ package bundleutil
 
 import (
 	"crypto/x509"
+	"math/big"
 	"testing"
 	"time"
 
-	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
-	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/spire/proto/spire/common"
 	"github.com/stretchr/testify/require"
 )
 
 func TestCalculateRefreshHint(t *testing.T) {
-	trustDomain := spiffeid.RequireTrustDomainFromString("domain.test")
-	emptyBundle := spiffebundle.New(trustDomain)
-	emptyBundleWithRefreshHint := spiffebundle.New(trustDomain)
-	emptyBundleWithRefreshHint.SetRefreshHint(time.Hour * 1)
+	trustDomainID := "spiffe://domain.test"
+	emptyBundle := &common.Bundle{TrustDomainId: trustDomainID}
+	emptyBundleWithRefreshHint := &common.Bundle{
+		TrustDomainId: trustDomainID,
+		RefreshHint:   int64(time.Hour.Seconds()),
+	}
 
 	now := time.Now()
-	bundleWithCerts := spiffebundle.New(trustDomain)
-	bundleWithCerts.AddX509Authority(&x509.Certificate{
-		Raw:       []byte{1},
-		NotBefore: now,
-		NotAfter:  now.Add(time.Hour * 2),
-	})
-	bundleWithCerts.AddX509Authority(&x509.Certificate{
-		Raw:       []byte{2},
-		NotBefore: now,
-		NotAfter:  now.Add(time.Hour),
-	})
-	bundleWithCerts.AddX509Authority(&x509.Certificate{
-		Raw:       []byte{3},
-		NotBefore: now,
-		NotAfter:  now.Add(time.Hour * 3),
-	})
+	bundleWithCerts := &common.Bundle{
+		TrustDomainId: trustDomainID,
+		RootCas: []*common.Certificate{
+			{DerBytes: createRootCA(t, now, now.Add(time.Hour*2)).Raw},
+			{DerBytes: createRootCA(t, now, now.Add(time.Hour)).Raw},
+			{DerBytes: createRootCA(t, now, now.Add(time.Hour*3)).Raw},
+		},
+	}
+
+	pkixBytes, err := x509.MarshalPKIXPublicKey(testKey.Public())
+	require.NoError(t, err)
+
+	bundleWithCertsAndJWTKeys := &common.Bundle{
+		TrustDomainId: trustDomainID,
+		RootCas: []*common.Certificate{
+			{DerBytes: createRootCA(t, now, now.Add(time.Hour*3)).Raw},
+		},
+		JwtSigningKeys: []*common.PublicKey{
+			{Kid: "A", PkixBytes: pkixBytes, NotAfter: now.Add(time.Hour).Unix()},
+			{Kid: "B", PkixBytes: pkixBytes, NotAfter: now.Add(time.Hour * 2).Unix()},
+			{Kid: "C", PkixBytes: pkixBytes},
+		},
+	}
 
 	testCases := []struct {
 		name        string
-		bundle      *spiffebundle.Bundle
+		bundle      *common.Bundle
 		refreshHint time.Duration
 	}{
 		{
@@ -56,11 +65,28 @@ func TestCalculateRefreshHint(t *testing.T) {
 			bundle:      bundleWithCerts,
 			refreshHint: time.Hour / refreshHintLeewayFactor,
 		},
+		{
+			// the JWT signing key that expires in 1 hour expires before the
+			// root CA, so the refresh hint follows the key instead. the key
+			// without an expiration is ignored.
+			name:        "bundle with certs and JWT signing keys",
+			bundle:      bundleWithCertsAndJWTKeys,
+			refreshHint: time.Hour / refreshHintLeewayFactor,
+		},
 	}
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			require.Equal(t, testCase.refreshHint, CalculateRefreshHint(testCase.bundle), "refresh hint is wrong")
+			require.InDelta(t, float64(testCase.refreshHint), float64(CalculateRefreshHint(testCase.bundle)), float64(time.Second), "refresh hint is wrong")
 		})
 	}
+}
+
+func createRootCA(t *testing.T, notBefore, notAfter time.Time) *x509.Certificate {
+	return createCertificate(t, &x509.Certificate{
+		SerialNumber: big.NewInt(0),
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
+		IsCA:         true,
+	})
 }

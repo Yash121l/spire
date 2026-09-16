@@ -344,7 +344,11 @@ func calculateNextUpdate(b *spiffebundle.Bundle) time.Duration {
 	if _, ok := b.RefreshHint(); !ok {
 		return defaultRefreshInterval
 	}
-	return bundleutil.CalculateRefreshHint(b) / attemptsPerRefreshHint
+	bundle, err := bundleutil.SPIFFEBundleToProto(b)
+	if err != nil {
+		return defaultRefreshInterval
+	}
+	return bundleutil.CalculateRefreshHint(bundle) / attemptsPerRefreshHint
 }
 
 func cloneTrustDomainConfigs(configs map[spiffeid.TrustDomain]TrustDomainConfig) map[spiffeid.TrustDomain]TrustDomainConfig {
